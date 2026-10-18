@@ -2,11 +2,11 @@
 
 An educational paper-trading simulator for Indian markets, being built in phases toward an Angel One market-data connection.
 
-**Current phase: offline accounting plus an optional read-only SmartAPI REST adapter.** All balances and fills are virtual. The bundled `DEMO-EQ` instrument and its prices are fictional. `paper_trader.py` stays offline; `smartapi_data.py` separately inspects authorised market data. Neither can send broker orders. Angel One does not sponsor or endorse this project. Account-dependent live access has **not** been verified.
+**Current phase: offline accounting plus read-only SmartAPI REST and WebSocket adapters.** All balances and fills are virtual. The bundled `DEMO-EQ` instrument and its prices are fictional. `paper_trader.py` stays offline; the data CLIs separately inspect authorised market data. They cannot send broker orders. Angel One does not sponsor or endorse this project. Account-dependent live access has **not** been verified.
 
 ## Run it
 
-Use Python 3.11 or newer. No third-party packages are needed. The offline simulator and tests require no API key, static IP or paid service.
+Use Python 3.11 or newer. REST, accounting and the core offline tests use the standard library. WebSocket streaming has one optional transport dependency, installed below. The offline simulator and tests require no API key, static IP or paid service.
 
 ```bash
 git clone https://github.com/AaryaMody1301/angel-paper-trader.git
@@ -56,20 +56,20 @@ python paper_trader.py --db data/another-account.sqlite3 init --cash 50000
 
 ## Scope and limitations
 
-The offline simulator fills the full requested quantity against a supplied quote. It does **not** model displayed liquidity, queue position, partial fills, limit/stop orders, exchange tick sizes, contract lots, margin, corporate actions or expiry/settlement. The fixed fee is not a complete Indian brokerage/tax model. There is no strategy, historical-data backtester or streaming feed. Synthetic results are not evidence of trading profitability.
+The offline simulator fills the full requested quantity against a supplied quote. It does **not** model displayed liquidity, queue position, partial fills, limit/stop orders, exchange tick sizes, contract lots, margin, corporate actions or expiry/settlement. The fixed fee is not a complete Indian brokerage/tax model. There is no strategy or historical-data backtester. The read-only stream does not feed the paper execution engine. Synthetic results are not evidence of trading profitability.
 
 Although offline symbols can be named freely, the data adapter supports only NSE cash instruments in the `EQ` series with lot size 1. Indices, other equity series, derivatives, currencies and other exchanges are rejected. Live F&O work requires authoritative contract metadata and actual contract premiums; an index price is not an option premium.
 
 ## Read-only SmartAPI setup
 
-The adapter offers a single-instrument REST FULL snapshot and historical OHLCV, using only Python's standard library. It does not write to the paper journal or submit virtual fills. WebSocket streaming is researched below but is **not implemented** in this initial REST adapter.
+The adapter offers a single-instrument REST FULL snapshot and historical OHLCV, using only Python's standard library. The optional `smartapi_stream.py` CLI adds single-instrument WebSocket 2.0 SnapQuote streaming. Neither writes to the paper journal or submits virtual fills.
 
 1. Enable SmartAPI and TOTP on your own Angel One account. Create/verify your app in the [official SmartAPI portal](https://smartapi.angelone.in/). Confirm the app has market-data and historical-data permissions and that it accepts PIN/TOTP login. OAuth was announced in 2025; this adapter implements only the PIN/TOTP endpoint still listed in the current docs and official Python client. An OAuth-only account needs a separately reviewed adapter change.
 2. Arrange actual static **IPv4** egress and register it with the app. Treat this as required for data access under the newer broker clarification below. Use the same route when running the commands. A value in an HTTP header does not establish or register your source IP; the adapter does not alter network routing, buy infrastructure or register anything on your account.
 3. Copy the placeholder-only `.env.example` to `.env` **if you do not already have a local configuration**, then edit it locally. Enter the API key, client code, actual local/public IPv4 addresses and colon-separated MAC address. Keep file permissions restricted to your user. Never paste these values, PINs, TOTP seeds or session tokens into chat, issues or PRs.
 4. Read the current [broker instrument master](https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json) and select an exact exchange/symbol/token combination. Each command downloads the master again and rejects missing, ambiguous or mismatched identities and unsupported metadata.
 
-The `.env` format is literal `KEY=VALUE`, optionally enclosed in matching quotes, with full-line `#` comments. There is no shell execution, `export`, interpolation or inline-comment syntax. Only the five keys in `.env.example` are accepted; environment variables override the corresponding file values. PIN and the current six-digit TOTP are requested through **hidden prompts in your local interactive terminal**, never through command-line flags. The adapter stores no session files; JWTs live in memory, and refresh/feed tokens are discarded. Local disposal sends no broker logout that could affect another application's session.
+The `.env` format is literal `KEY=VALUE`, optionally enclosed in matching quotes, with full-line `#` comments. There is no shell execution, `export`, interpolation or inline-comment syntax. Only the five keys in `.env.example` are accepted; environment variables override the corresponding file values. PIN and the current six-digit TOTP are requested through **hidden prompts in your local interactive terminal**, never through command-line flags. The adapter stores no session files; JWTs live in memory, refresh tokens are discarded, and feed tokens are retained only when streaming is requested. Local disposal clears both tokens and sends no broker logout that could affect another application's session.
 
 ```bash
 # Run locally during an active market session with a fresh order book.
@@ -90,7 +90,7 @@ REST prices arrive in INR and are parsed with `Decimal` into exact integer paise
 
 History requests require timezone-aware, increasing, past timestamps at whole minutes. Returned candles must be ordered, unique, inside the requested range, and have valid OHLC/volume. Candles are not executable live quotes. Results do not guarantee gap-free coverage; the last candle can be incomplete. An 8000-row one-minute response sets `one_minute_record_limit_reached`; narrow/split the request and investigate completeness before using it. There is no pagination or backtester.
 
-On failure the CLI exits nonzero with a controlled error and no price output. It recognises invalid/expired sessions, access denial, JSON/API errors, HTTP 429, plain-text rate-limit 403s, `AB1021`, network timeout/disconnection, and stale data. Each instance permits at most one attempt per second per endpoint and respects `Retry-After` seconds/HTTP dates (60-second fallback). There are no automatic retries or cached-price fallbacks. Wait for the reported cooldown before manually retrying; coordinate all other processes/apps sharing the client code. Re-login with fresh local TOTP after expiry, including the midnight IST cutoff. A successful login alone does not establish quote/history permission or static-IP acceptance.
+On failure the REST CLI exits nonzero with a controlled error and no price output. It recognises invalid/expired sessions, access denial, JSON/API errors, HTTP 429, plain-text rate-limit 403s, `AB1021`, network timeout/disconnection, and stale data. Each instance permits at most one attempt per second per endpoint and respects `Retry-After` seconds/HTTP dates (60-second fallback). REST has no automatic retries or cached-price fallbacks. Wait for the reported cooldown before manually retrying; coordinate all other processes/apps sharing the client code. Re-login with fresh local TOTP after expiry, including the midnight IST cutoff. A successful login alone does not establish data permissions or static-IP acceptance.
 
 TLS hostname/certificate verification is always enabled, with TLS 1.2 or newer. Redirects are blocked. Raw broker bodies, request headers, PINs and tokens are never logged or included in error messages. The only outbound targets are:
 
@@ -100,8 +100,34 @@ TLS hostname/certificate verification is always enabled, with TLS 1.2 or newer. 
 | POST | `apiconnect.angelone.in` | `/rest/secure/angelbroking/market/v1/quote` |
 | POST | `apiconnect.angelone.in` | `/rest/secure/angelbroking/historical/v1/getCandleData` |
 | GET | `margincalculator.angelone.in` | `/OpenAPI_File/files/OpenAPIScripMaster.json` |
+| GET (WebSocket upgrade) | `smartapisocket.angelone.in` | `/smart-stream` |
 
-The final HTTP boundary checks the exact method/host/path against an immutable allowlist before constructing a connection. No generic broker URL, execution SDK, order placement/modification/cancellation, GTT, position conversion, EDIS or other account-changing route is exposed. Authentication is the only session-creating operation. The public master receives no account headers. This is an application boundary, not a sandbox for arbitrary Python code a user might add themselves.
+The HTTP boundary checks the exact method/host/path against an immutable allowlist before constructing a connection. The separate WebSocket boundary connects only to the fixed `wss://smartapisocket.angelone.in/smart-stream` URI and sends only the selected SnapQuote subscription and text heartbeats. No generic broker URL, execution SDK, order placement/modification/cancellation, GTT, position conversion, EDIS or other account-changing route is exposed. Authentication is the only session-creating operation. The public master receives no account headers. This is an application boundary, not a sandbox for arbitrary Python code a user might add themselves.
+
+## Optional WebSocket streaming
+
+Create a virtual environment if needed and install the pinned optional transport. On Windows, use its Python directly so activation-policy changes are unnecessary:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-stream.txt
+.\.venv\Scripts\python.exe -m unittest -v
+.\.venv\Scripts\python.exe smartapi_stream.py --help
+
+# Complete the local .env/app/static-IP setup above first.
+# Check today's master and run during an active market session.
+.\.venv\Scripts\python.exe smartapi_stream.py --symbol SBIN-EQ --token 3045 --count 10 --seconds 60 --max-reconnects 2
+```
+
+On macOS/Linux the equivalent executable is `.venv/bin/python`. The dependency is `websockets==17.2`, released 3 October 2026 on [PyPI](https://pypi.org/project/websockets/17.2/). It supplies the WebSocket transport; authentication and quote decoding stay in this project. Missing or different transport versions fail before login/network access. `--help` and the binary/lifecycle fixture tests work without it; two installed-transport checks are skipped when it is absent. Both test runs were checked on 18 October 2026.
+
+The CLI prints one JSON object per line. `CONNECTING` and `SUBSCRIBED` health events contain no prices. A verified quote event has `event: "quote"`, `status: "LIVE"`, exact INR bid/ask/LTP strings, sequence, exchange timestamp and receipt timestamp. `UNAVAILABLE`, `RECONNECTING` and `STOPPED` invalidate any prior live status; consumers must stop using previous quotes and still enforce their age. The command stops at `--count` fresh quotes or `--seconds` elapsed, and Ctrl+C closes the connection and clears the local session. Failure exits nonzero. It never prints a replacement price when data fails.
+
+Only NSE EQ / exchange type 1 / mode 3 is supported. The parser checks the exact 379-byte packet, NUL-padded instrument token, signed 64-bit sequence/price/quantity fields, millisecond exchange feed time, five records per depth side, quantities, ticks and non-crossed prices. Wire **flag 1 means bid, flag 0 means ask**. WebSocket prices are already paise, so no extra INR-to-paise multiplication is applied. Last-trade and dummy/OI-change fields do not establish quote freshness. Repeated identical sequences are ignored; sequence regressions, same-sequence price conflicts and backwards feed timestamps stop the stream. Sequence gaps are accepted as complete snapshots without inventing the missing ticks; an advancing sequence may update prices within the same millisecond.
+
+Application text `ping` is sent immediately and then every 20 seconds, within the documented 30-second heartbeat interval. A missing text `pong` for 10 seconds, absent fresh data or an aged quote marks the stream unavailable. Pongs cannot refresh a quote timestamp. Recoverable transport/heartbeat/no-data interruptions close the previous socket and use a lifetime reconnect budget: default two reconnects with 1- then 2-second backoff (configurable 0–5, delay capped at 8 seconds). Successful ticks do not reset that budget. Reconnection repeats the same subscription, permits a new connection's sequence to restart, and emits no quote until the feed timestamp is newer than the last accepted quote. REST is never silently substituted for the stream.
+
+Authentication, access, subscription, protocol and TLS errors stop without retries. HTTP 429 or a transient service error with `Retry-After` stops with a cooldown, retained by the client instance; manually retry after it expires. Raw broker close reasons/headers/bodies are suppressed. Sockets use verified TLS 1.2+, disabled transport credential logging, no automatic redirects or environment proxies, no compression, a 4096-byte message limit and a four-frame queue. Static egress must therefore come from the actual local network route. Programmatic callers should use `login(..., streaming=True)` and close `client.stream(...)` with `contextlib.closing` when stopping iteration early.
 
 ## Official SmartAPI review — 17 October 2026
 
@@ -111,7 +137,7 @@ Primary sources conflict in places. Publication dates below refer to the origina
 - **Authentication/sessions:** [current User documentation](https://smartapi.angelone.in/docs/User) lists client code, PIN and TOTP, returning JWT/refresh/feed tokens. The [26 September 2025 admin notice](https://smartapi.angelone.in/smartapi/forum/topic/5352/static-ip-based-api-keys-now-live-old-flow-still-supported-temporarily) confirms daily midnight logout. [Earlier OAuth announcements and the 18 September 2025 admin reply](https://smartapi.angelone.in/smartapi/forum/topic/5254/important-updates-to-smartapi-in-compliance-with-sebi-guidelines/37) do not establish removal of PIN/TOTP: the [official Python client](https://github.com/angel-one/smartapi-python/blob/main/SmartApi/smartConnect.py) still uses `loginByPassword`. Account acceptance remains unverified; the adapter requests reauthentication rather than assuming refresh extends a daily session.
 - **REST/rates:** [current market-data/history/rate documentation](https://smartapi.angelone.in/docs) describes FULL depth and ISO OHLCV candles. The quote section says **1 request/second, up to 50 tokens**, while the rate table says **10/second, 500/minute, 5000/hour**. Use the stricter 1/second (this adapter requests one token). History is **3/second, 150/minute, 5000/hour** in the current table; the [28 February 2024 moderator notice and 18 March correction](https://smartapi.angelone.in/smartapi/forum/topic/4387/changes-in-api-rate-limit/1) used 180/minute. Use 150. Limits apply per client code, not per instance. The [historical expansion release](https://smartapi.angelone.in/smartapi/forum/topic/4012/release-note-free-historical-data-access-for-indices-nse-nfo-bse-bfo-mcx-and-cds-with-smartapi/1) notes the 8000-record one-minute ceiling. The adapter enforces the documented day ranges: 30/60/100/100/200/200/400/2000 for 1m/3m/5m/10m/15m/30m/1h/1d respectively.
 - **Units/depth:** the [official master-field clarification](https://smartapi.angelone.in/smartapi/forum/topic/1300/instrument-master-fields-interpretation/1) identifies master values as paise for the supported equity case; currency conventions differ and are unsupported. REST FULL's named buy/sell arrays determine this adapter's sides. The [WebSocket 2.0 protocol](https://smartapi.angelone.in/docs/WebSocket2) specifies little-endian SnapQuote depth with flag **1 = buy/bid, 0 = sell/ask**, equity prices in paise, and exchange feed timestamps in epoch milliseconds. The [current official SDK implementation](https://github.com/angel-one/smartapi-python/blob/main/SmartApi/smartWebSocketV2.py) reverses labels inside its depth helper and swaps them back in its outer parser. Copying helper labels alone gives the wrong sides. It also uses `CERT_NONE` in its connection code; this project never imports or adopts that client.
-- **WebSockets:** [the protocol](https://smartapi.angelone.in/docs/WebSocket2) uses `wss://smartapisocket.angelone.in/smart-stream`, JWT/API-key/client-code/feed-token headers, a text ping/pong every 30 seconds, three concurrent connections per client and 1000 token/mode subscriptions per connection. These are reviewed requirements for future streaming, **not tested capabilities of this REST adapter**. Any streaming addition must separately test binary flags/scaling, heartbeat loss, bounded reconnection/resubscription, post-reconnect freshness and comparison with REST FULL; it must retain verified TLS.
+- **WebSockets (implementation review extended 18 October 2026):** [the protocol](https://smartapi.angelone.in/docs/WebSocket2) uses the stream URL above, JWT/API-key/client-code/feed-token headers, text ping/pong within 30 seconds, three concurrent connections per client and 1000 token/mode subscriptions per connection. The new adapter uses one connection/subscription at a time. The table's LTP `int32` label conflicts with its eight-byte width; the layout and [official SDK's signed 64-bit decoder](https://github.com/angel-one/smartapi-python/blob/main/SmartApi/smartWebSocketV2.py) determine decoding. Offline fixtures check both protocol sides against REST FULL. The [pinned transport source](https://github.com/python-websockets/websockets/blob/17.2/src/websockets/sync/client.py) follows redirects by default, so this adapter rejects them through its redirect hook; an installed-transport test verifies no second handshake. These checks establish implementation behaviour, **not live access or broker quotas**.
 
 ## Verification and remaining account checks
 
@@ -119,13 +145,14 @@ Primary sources conflict in places. Publication dates below refer to the origina
 python -m unittest -v
 python paper_trader.py demo
 python smartapi_data.py --help
+python smartapi_stream.py --help
 git diff --check
 git check-ignore .env .env.local data/paper.sqlite3 logs/session.log
 ```
 
-The offline suite mocks every SmartAPI HTTP connection and uses fictional fixtures. It covers accounting, parsing, instrument identity/units/timestamps, restricted endpoints before I/O, verified TLS, redirects, credential-safe failures, session expiry, local/server rate limits, disconnects and the CLI flow. The demo remains isolated and returns ₹78 realised profit. Passing these checks is **not live broker verification**. Separately, a public-master HTTPS download and resolution of `NSE / SBIN-EQ / 3045` to a 5-paise tick succeeded on 17 October 2026; this used no credentials or authenticated endpoint.
+The offline suite mocks every SmartAPI HTTP/WebSocket connection and uses fictional fixtures. It covers accounting, binary/REST parsing and cross-checks, instrument identity/units/timestamps, restricted endpoints before I/O, verified TLS configuration, redirects, credential-safe failures, session expiry, local/server rate limits, heartbeat loss, bounded reconnects/resubscription, replay rejection after reconnect and both CLI flows. With `requirements-stream.txt` installed, all 69 tests passed on 18 October 2026. The dependency-free run passed with two installed-transport tests skipped. The demo remains isolated and returns ₹78 realised profit. Passing these checks is **not live broker verification**. Separately, a public-master HTTPS download and resolution of `NSE / SBIN-EQ / 3045` to a 5-paise tick succeeded on 17 October 2026; this used no credentials or authenticated endpoint.
 
-Remaining local checks require your app/credentials, registered static egress and data permissions: log in locally; compare a fresh bid/ask, token, feed time and price scale against Angel One's terminal; request a small known historical range and independently compare OHLCV. Check actual expiry/re-login, rate/access failures and recovery using authorised, low-volume requests. Never test the read-only restriction by submitting a real order. Record only a non-sensitive outcome/date in project notes; keep broker responses, app/account screenshots and tokens private. WebSocket access/implementation remains a separate open Phase 2 item. Phase 2 live acceptance is not complete.
+Remaining local checks require your app/credentials, registered static egress and data permissions: log in locally; compare a fresh bid/ask, token, feed time and price scale against Angel One's terminal; request a small known historical range and independently compare OHLCV; run the WebSocket CLI and compare contemporaneous SnapQuote and REST FULL depth. Check actual expiry/re-login, heartbeat responses, rate/access failures and reconnect/resubscription recovery using authorised, low-volume requests. Never test the read-only restriction by submitting a real order. Record only a non-sensitive outcome/date in project notes; keep broker responses, app/account screenshots and tokens private. WebSocket implementation is complete for the stated scope, while authenticated REST/WebSocket verification and Phase 2 live acceptance remain open.
 
 ## Public repository hygiene
 
@@ -133,7 +160,7 @@ Commit code, documentation and fictional examples. Keep credentials, TOTP seeds/
 
 ## Next phases
 
-See [ROADMAP.md](ROADMAP.md) for implementation status and acceptance criteria. Phase 1 remains implemented and checked. Phase 2's initial REST adapter is implemented and checked offline; authorised live validation and WebSocket streaming remain open. No dashboard, strategy or real-money execution is included.
+See [ROADMAP.md](ROADMAP.md) for implementation status and acceptance criteria. Phase 1 remains implemented and checked. Phase 2's REST and single-instrument WebSocket adapters are implemented and checked offline; authorised live validation remains open. Phase 3 forward execution has not started. No dashboard, strategy or real-money execution is included.
 
 ## License
 

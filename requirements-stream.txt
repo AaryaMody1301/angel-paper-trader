@@ -1,0 +1,2 @@
+# Optional transport only; REST, accounting and offline fixtures use the standard library.
+websockets==17.2

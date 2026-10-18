@@ -311,15 +311,22 @@ class SmartAPIData:
     def close(self):
         # Local disposal only; a broker logout could invalidate another application's session.
         self._jwt = None
+        self._feed_token = None
         self._expires = None
         self._seen = {}
+
+    def _require_session(self, streaming=False):
+        if self._jwt is None or utc(self.clock()) >= self._expires:
+            self.close()
+            raise SessionExpired("No active session or daily session expired; log in locally with a fresh TOTP.")
+        if streaming and self._feed_token is None:
+            raise SessionExpired("No streaming feed token; log in locally again with streaming enabled.")
 
     def _call(self, endpoint, payload):
         if endpoint not in (LOGIN, QUOTE, HISTORY):
             raise SmartAPIError("Endpoint blocked: this client exposes authentication and read-only data only.")
-        if endpoint != LOGIN and (self._jwt is None or utc(self.clock()) >= self._expires):
-            self.close()
-            raise SessionExpired("No active session or daily session expired; log in locally with a fresh TOTP.")
+        if endpoint != LOGIN:
+            self._require_session()
         instant = time.monotonic()
         remaining = self._next_allowed.get(endpoint, instant) - instant
         if remaining > 0:
@@ -342,7 +349,7 @@ class SmartAPIData:
             self._next_allowed[endpoint] = time.monotonic() + exc.retry_after
             raise
 
-    def login(self, pin, totp):
+    def login(self, pin, totp, *, streaming=False):
         self.close()
         if not isinstance(pin, str) or not 1 <= len(pin) <= 128 or any(not 33 <= ord(c) <= 126 for c in pin):
             raise SmartAPIError("Enter a valid account PIN at the local hidden prompt.")
@@ -352,9 +359,13 @@ class SmartAPIData:
         token = data.get("jwtToken") if isinstance(data, dict) else None
         if not isinstance(token, str) or len(token) > 4096 or not re.fullmatch(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", token):
             raise SmartAPIError("Login response has no valid JWT; session remains unavailable.")
+        feed = data.get("feedToken") if streaming else None
+        if streaming and (not isinstance(feed, str) or not 1 <= len(feed) <= 4096 or any(not 33 <= ord(c) <= 126 for c in feed)):
+            raise SmartAPIError("Login response has no valid streaming feed token; session remains unavailable.")
         self._jwt = token
+        self._feed_token = feed
         self._expires = (utc(self.clock()).astimezone(IST) + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
-        # Refresh/feed tokens and any profile data are intentionally discarded.
+        # Refresh tokens/profile data are discarded; feed tokens are kept only for streaming.
 
     def quote(self, instrument, max_age=30):
         integer(max_age, "maximum quote age", 1, 3600)
@@ -379,12 +390,41 @@ class SmartAPIData:
                 "one_minute_record_limit_reached": interval == "ONE_MINUTE" and len(candles) == 8000,
                 "candles": candles}
 
+    def stream(self, instrument, *, max_age=30, max_reconnects=2, max_quotes=10, duration=60):
+        from smartapi_stream import stream_quotes
+        return stream_quotes(self, instrument, max_age=max_age, max_reconnects=max_reconnects,
+                             max_quotes=max_quotes, duration=duration)
+
 
 class _ArgumentParser(argparse.ArgumentParser):
     def error(self, message):
         # argparse normally echoes unknown arguments, which might be pasted secrets.
         self.print_usage(sys.stderr)
         self.exit(2, "Error: invalid command arguments; use --help. Never pass credentials as arguments.\n")
+
+
+def _local_settings(path):
+    settings = Settings.load(path)
+    if not sys.stdin.isatty():
+        raise SmartAPIError("Use an interactive local terminal for hidden PIN/TOTP prompts; credentials cannot be piped or passed as CLI flags.")
+    return settings
+
+
+def _local_login(settings, *, streaming=False):
+    client = SmartAPIData(settings)
+    pin = totp = None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            pin = getpass.getpass("Angel One PIN (local, hidden): ")
+            totp = getpass.getpass("Current authenticator TOTP (local, hidden): ")
+        client.login(pin, totp, streaming=streaming)
+        return client
+    except BaseException:
+        client.close()
+        raise
+    finally:
+        pin = totp = None
 
 
 def main(argv=None):
@@ -411,19 +451,9 @@ def main(argv=None):
             history_request(identity, args.interval, start, end, datetime.now(timezone.utc))
         else:
             integer(args.max_quote_age, "maximum quote age", 1, 3600)
-        settings = Settings.load(args.env_file)
-        if not sys.stdin.isatty():
-            raise SmartAPIError("Use an interactive local terminal for hidden PIN/TOTP prompts; credentials cannot be piped or passed as CLI flags.")
+        settings = _local_settings(args.env_file)
         instrument = resolve_instrument(_http(MASTER), args.exchange, args.symbol, args.token)
-        client = SmartAPIData(settings)
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", getpass.GetPassWarning)
-            pin = getpass.getpass("Angel One PIN (local, hidden): ")
-            totp = getpass.getpass("Current authenticator TOTP (local, hidden): ")
-        try:
-            client.login(pin, totp)
-        finally:
-            pin = totp = None
+        client = _local_login(settings)
         result = client.quote(instrument, args.max_quote_age) if args.command == "quote" else client.candles(instrument, args.interval, start, end)
         print(json.dumps(readable(result), indent=2))
         return 0

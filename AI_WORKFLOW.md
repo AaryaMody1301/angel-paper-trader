@@ -75,6 +75,8 @@ Optional `contexts` maps a trading segment to an independently verified analytic
 
 ## Collect and prepare
 
+Missing or malformed market configuration stops before opening a journal or logging in. `collect` and `run` accept `--seconds` from 1 through 86,400; invalid durations stop before configuration, recording or authentication.
+
 Global `--db`, `--config` and `--env-file` options precede the command. Public-master inspection needs no authentication:
 
 ```powershell
@@ -166,3 +168,5 @@ Recover existing virtual exits without a working LLM:
 Exit-only recovery needs fresh executable prices and verified tradable contracts, but does not require analytical index inputs. Unchanged risk/equity observations are not repeatedly written during idle polling. Each rejected exit is retried only after a new quote arrives; unresolved positions remain visible.
 
 Reports include coverage/gates, evaluations, cash/equity, realised results, costs, turnover, drawdown, latency, rejected signals and unresolved positions. Live model latency includes inference queue time and failed inference attempts; exits and other non-model decisions do not dilute that measurement. Fine-tuning or passing fixtures does not establish profitability or authenticated broker acceptance. Keep configuration, datasets, models, exports and journals private.
+
+Terminal JSON renders cash amounts as exact decimal strings with `_inr` names. Exported report files preserve the underlying integer values with `_paise` names; native contract prices keep their explicit units and scale in both forms.

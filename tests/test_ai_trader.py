@@ -39,6 +39,7 @@ from ai_paper.market import (
     config_id,
     digest,
     exact,
+    load_config,
     parse_full,
     resolve_contracts,
 )
@@ -319,6 +320,56 @@ class JournalTests(unittest.TestCase):
 
 
 class DataTests(unittest.TestCase):
+    def test_market_config_rejects_invalid_shapes_before_journal_or_authentication(self):
+        valid = configuration()
+        invalid = [
+            [], None, {**valid, "version": True}, {**valid, "segments": list(SEGMENTS)},
+            {**valid, "segments": {**valid["segments"], "NSE": None}},
+            {**valid, "segments": {**valid["segments"], "NSE": {"sessions": []}}},
+            {**valid, "segments": {**valid["segments"], "NSE": {"costs": []}}},
+            {**valid, "contracts": None}, {**valid, "contracts": {"NSE:123456": []}},
+            {**valid, "contexts": []}, {**valid, "contexts": {"NSE": None}},
+            {**valid, "data_issues": []}, {**valid, "data_issues": {"NSE:123456": "2026-01-05"}},
+            {**valid, "data_issues": {"NSE:123456": [None]}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "private-fixture.json"
+            path.write_text(canonical(valid), encoding="utf-8")
+            self.assertEqual(load_config(path), valid)
+            for value in invalid:
+                path.write_text(canonical(value), encoding="utf-8")
+                errors = io.StringIO()
+                with (
+                    self.subTest(value=value),
+                    patch("ai_trader.Store") as journal,
+                    patch("ai_trader._local_login") as login,
+                    patch("ai_trader._http") as network,
+                    redirect_stderr(errors),
+                ):
+                    self.assertEqual(main(["--config", str(path), "report"]), 1)
+                    self.assertTrue(errors.getvalue().startswith("Error: "))
+                    self.assertNotIn("private-fixture", errors.getvalue())
+                    journal.assert_not_called()
+                    login.assert_not_called()
+                    network.assert_not_called()
+
+    def test_missing_and_unreadable_market_config_give_safe_setup_guidance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "private-fixture.json"
+            for contents, expected in (
+                (None, "copy market.example.json to market.local.json"),
+                (b"{private-fixture", "readable UTF-8 JSON file"),
+                (b"\xff", "readable UTF-8 JSON file"),
+            ):
+                if contents is not None:
+                    path.write_bytes(contents)
+                errors = io.StringIO()
+                with patch("ai_trader.Store") as journal, redirect_stderr(errors):
+                    self.assertEqual(main(["--config", str(path), "report"]), 1)
+                self.assertIn(expected, errors.getvalue())
+                self.assertNotIn("private-fixture", errors.getvalue())
+                journal.assert_not_called()
+
     def test_native_precision_and_cash_conversion(self):
         self.assertEqual(exact("0.0025", 10000000), 25000)
         for value in ("0.00000001", "NaN", True, "-1"):
@@ -1166,6 +1217,33 @@ class LocalModelTests(unittest.TestCase):
                 main(["--config", "missing-fixture.json", "run", "--model-dir", "missing-model"]), 1
             )
             login.assert_not_called()
+
+    def test_session_duration_is_checked_before_configuration_or_operations(self):
+        for command in ("collect", "run"):
+            for duration in (-1, 0, 86401):
+                errors = io.StringIO()
+                with (
+                    self.subTest(command=command, duration=duration),
+                    patch("ai_trader.load_config") as config,
+                    patch("ai_trader.Store") as journal,
+                    patch("ai_trader." + command) as operation,
+                    redirect_stderr(errors),
+                ):
+                    self.assertEqual(main([command, "--seconds", str(duration)]), 1)
+                    self.assertIn("--seconds must be between 1 and 86400", errors.getvalue())
+                    config.assert_not_called()
+                    journal.assert_not_called()
+                    operation.assert_not_called()
+            for duration in (1, 86400):
+                with (
+                    self.subTest(command=command, duration=duration),
+                    patch("ai_trader.load_config", return_value=configuration()),
+                    patch("ai_trader.Store"),
+                    patch("ai_trader." + command, return_value={}) as operation,
+                    redirect_stdout(io.StringIO()),
+                ):
+                    self.assertEqual(main([command, "--seconds", str(duration)]), 0)
+                    operation.assert_called_once()
 
 
 if __name__ == "__main__":

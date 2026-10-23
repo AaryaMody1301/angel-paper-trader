@@ -2,7 +2,26 @@
 
 An educational paper-trading simulator for Indian markets, being built in phases toward an Angel One market-data connection.
 
-**Current phase: offline accounting plus read-only SmartAPI REST and WebSocket adapters.** All balances and fills are virtual. The bundled `DEMO-EQ` instrument and its prices are fictional. `paper_trader.py` stays offline; the data CLIs separately inspect authorised market data. They cannot send broker orders. Angel One does not sponsor or endorse this project. Account-dependent live access has **not** been verified.
+**Current phase: offline accounting, read-only SmartAPI adapters and a gated local LLM research pipeline.** All balances and fills are virtual. The bundled `DEMO-EQ` instrument and its prices are fictional. `paper_trader.py` stays offline. `ai_trader.py` connects verified data to a separate virtual journal after model admission checks. No broker orders can be sent. Angel One does not sponsor or endorse this project. Account-dependent live access has **not** been verified.
+
+For CPU/CUDA fine-tuning, all-segment capability records, automatic shortlists, recorded-book replay and shadow/paper sessions, start with [AI_WORKFLOW.md](AI_WORKFLOW.md). No trained market model or live-verified segment is bundled. Existing offline commands below remain available.
+
+## Project structure
+
+```text
+ai_paper/                  Verified data, virtual execution, learning and evaluation
+tests/                     Accounting, REST, streaming and local training checks
+ai_trader.py               Collection/training/evaluation/shadow/paper/report CLI
+paper_trader.py            Original offline simulator and shared settlement
+smartapi_data.py           Read-only REST adapter and inspection CLI
+smartapi_stream.py         Read-only WebSocket adapter and inspection CLI
+market.example.json        Unverified configuration template
+requirements-*.txt         Optional streaming, training and GGUF dependencies
+AI_WORKFLOW.md             Setup, module map and activation gates
+ROADMAP.md                 Implemented phases and remaining acceptance
+```
+
+Private configuration, journals, datasets, recordings and model files are ignored by Git.
 
 ## Run it
 

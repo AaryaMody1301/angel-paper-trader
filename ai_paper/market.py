@@ -136,9 +136,36 @@ class Contract:
 
 
 def load_config(path):
-    config = json.loads(Path(path).read_text(encoding="utf-8-sig"))
-    if config.get("version") != 1 or set(config.get("segments", {})) != set(SEGMENTS):
+    try:
+        config = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        raise AIError(
+            "market configuration is missing; copy market.example.json to market.local.json "
+            "or pass --config with an existing file"
+        ) from None
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise AIError("market configuration must be a readable UTF-8 JSON file") from None
+    if not isinstance(config, dict) or type(config.get("version")) is not int or config["version"] != 1:
         raise AIError("config must declare version 1 and every SmartAPI segment")
+    segments = config.get("segments")
+    if not isinstance(segments, dict) or set(segments) != set(SEGMENTS):
+        raise AIError("config must declare version 1 and every SmartAPI segment")
+    for spec in segments.values():
+        if (
+            not isinstance(spec, dict)
+            or not isinstance(spec.get("sessions", {}), dict)
+            or (spec.get("costs") is not None and not isinstance(spec["costs"], dict))
+        ):
+            raise AIError("each segment must be an object with sessions as an object and costs as an object or null")
+    for name in ("contracts", "contexts"):
+        entries = config.get(name, {})
+        if not isinstance(entries, dict) or any(not isinstance(entry, dict) for entry in entries.values()):
+            raise AIError("contracts and contexts must be objects containing object entries")
+    issues = config.get("data_issues", {})
+    if not isinstance(issues, dict) or any(
+        not isinstance(days, list) or any(not isinstance(day, str) for day in days) for days in issues.values()
+    ):
+        raise AIError("data_issues must map instrument identities to lists of dates")
     return config
 
 

@@ -6,6 +6,8 @@ An educational paper-trading simulator for Indian markets, being built in phases
 
 For CPU/CUDA fine-tuning, all-segment capability records, automatic shortlists, recorded-book replay and shadow/paper sessions, start with [AI_WORKFLOW.md](AI_WORKFLOW.md). No trained market model or live-verified segment is bundled. Existing offline commands below remain available.
 
+The current user interface is the terminal commands and JSON reports. There is no web or desktop dashboard yet; dashboard work follows live-data and terminal acceptance in [ROADMAP.md](ROADMAP.md).
+
 ## Project structure
 
 ```text

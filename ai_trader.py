@@ -529,6 +529,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     store = None
     try:
+        if args.command in ("collect", "run") and not 1 <= args.seconds <= 86400:
+            raise AIError("--seconds must be between 1 and 86400")
         if args.command == "train":
             result = train(
                 args.dataset,

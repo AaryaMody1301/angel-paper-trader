@@ -23,8 +23,15 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
+models/
+datasets/
+artifacts/
+.hf-cache/
+market.local.json
+.tools/
 .idea/
 .vscode/
 .DS_Store

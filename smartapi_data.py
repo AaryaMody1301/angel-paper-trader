@@ -390,10 +390,10 @@ class SmartAPIData:
                 "one_minute_record_limit_reached": interval == "ONE_MINUTE" and len(candles) == 8000,
                 "candles": candles}
 
-    def stream(self, instrument, *, max_age=30, max_reconnects=2, max_quotes=10, duration=60):
+    def stream(self, instrument, *, max_age=30, max_reconnects=2, max_quotes=10, duration=60, windows=None):
         from smartapi_stream import stream_quotes
         return stream_quotes(self, instrument, max_age=max_age, max_reconnects=max_reconnects,
-                             max_quotes=max_quotes, duration=duration)
+                             max_quotes=max_quotes, duration=duration,windows=windows)
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -410,8 +410,8 @@ def _local_settings(path):
     return settings
 
 
-def _local_login(settings, *, streaming=False):
-    client = SmartAPIData(settings)
+def _local_login(settings, *, streaming=False, client_type=None):
+    client = (client_type or SmartAPIData)(settings)
     pin = totp = None
     try:
         with warnings.catch_warnings():

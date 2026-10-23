@@ -36,8 +36,8 @@ def symbol_name(value):
     if not isinstance(value, str):
         raise ValueError("symbol must be a string")
     value = value.strip().upper()
-    if not re.fullmatch(r"[A-Z0-9][A-Z0-9._-]{0,79}", value):
-        raise ValueError("invalid symbol; use up to 80 letters, numbers, dots, dashes or underscores")
+    if not re.fullmatch(r"[A-Z0-9][A-Z0-9&._-]{0,79}", value):
+        raise ValueError("invalid symbol; use up to 80 letters, numbers, ampersands, dots, dashes or underscores")
     return value
 
 
@@ -47,11 +47,41 @@ def utc(value):
     return value.astimezone(timezone.utc)
 
 
+def settle_fill(cash, held, cost, side, quantity, notional, fee):
+    """Shared long-only accounting for offline shares and native-unit contracts."""
+    integer(quantity, "quantity", 1)
+    integer(notional, "notional", 1)
+    integer(fee, "fee")
+    if side == "BUY":
+        debit = notional + fee
+        if debit > cash:
+            raise ValueError("insufficient virtual cash, including fees and slippage")
+        result = cash - debit, held + quantity, cost + debit, 0
+    elif side == "SELL":
+        if quantity > held:
+            raise ValueError("cannot sell more than the paper position; short selling is unsupported")
+        credit = notional - fee
+        if cash + credit < 0:
+            raise ValueError("insufficient virtual cash to cover the exit fee")
+        allocated = cost * quantity // held
+        result = cash + credit, held - quantity, cost - allocated, credit - allocated
+    else:
+        raise ValueError("side must be BUY or SELL")
+    integer(result[0], "resulting cash")
+    integer(result[1], "resulting position quantity", maximum=1_000_000_000)
+    integer(result[2], "resulting position cost")
+    integer(result[3], "realized P&L", -MAX_AMOUNT)
+    return result
+
+
 class PaperAccount:
     def __init__(self, path, clock=None):
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.db = sqlite3.connect(path, timeout=10)
         self.db.row_factory = sqlite3.Row
+        if self.db.execute("PRAGMA application_id").fetchone()[0] != 0:
+            self.db.close()
+            raise ValueError("this journal belongs to another application; choose an offline paper database")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
         if version not in (0, 1):
             self.db.close()
@@ -152,27 +182,13 @@ class PaperAccount:
             fee, bps = account["fee"], account["slippage_bps"]
             if side == "BUY":
                 price = (quote["ask"] * (10_000 + bps) + 9999) // 10_000
-                debit = price * quantity + fee
-                if debit > account["cash"]:
-                    raise ValueError("insufficient virtual cash, including fees and slippage")
-                cash = account["cash"] - debit
-                held, cost, profit = held + quantity, cost + debit, 0
             else:
                 if quantity > held:
                     raise ValueError("cannot sell more than the paper position; short selling is unsupported")
                 price = quote["bid"] * (10_000 - bps) // 10_000
                 if price <= 0:
                     raise ValueError("slippage would make the fill price zero")
-                credit = price * quantity - fee
-                if account["cash"] + credit < 0:
-                    raise ValueError("insufficient virtual cash to cover the exit fee")
-                allocated = cost * quantity // held
-                profit = credit - allocated
-                cash = account["cash"] + credit
-                held, cost = held - quantity, cost - allocated
-            integer(cash, "resulting cash")
-            integer(cost, "resulting position cost")
-            integer(held, "resulting position quantity", maximum=1_000_000_000)
+            cash, held, cost, profit = settle_fill(account["cash"], held, cost, side, quantity, price * quantity, fee)
             integer(realized + profit, "resulting realized P&L", -MAX_AMOUNT)
             self.db.execute("UPDATE account SET cash = ? WHERE id = 1", (cash,))
             self.db.execute("INSERT OR REPLACE INTO positions VALUES (?, ?, ?, ?)",

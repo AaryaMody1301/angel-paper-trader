@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "segments": {
+    "NSE": {"verified_on": null, "live_verified_on": null, "scale": 100, "master_tick_factor": "1", "multiplier": "1", "sessions": {}, "costs": null},
+    "BSE": {"verified_on": null, "live_verified_on": null, "scale": 100, "master_tick_factor": "1", "multiplier": "1", "sessions": {}, "costs": null},
+    "NFO": {"verified_on": null, "live_verified_on": null, "scale": 100, "master_tick_factor": "1", "multiplier": "1", "sessions": {}, "costs": null},
+    "BFO": {"verified_on": null, "live_verified_on": null, "scale": 100, "master_tick_factor": "1", "multiplier": "1", "sessions": {}, "costs": null},
+    "MCX": {"verified_on": null, "live_verified_on": null, "scale": null, "master_tick_factor": null, "multiplier": null, "sessions": {}, "costs": null},
+    "NCDEX": {"verified_on": null, "live_verified_on": null, "scale": null, "master_tick_factor": null, "multiplier": null, "sessions": {}, "costs": null},
+    "CDS": {"verified_on": null, "live_verified_on": null, "scale": null, "master_tick_factor": null, "multiplier": null, "sessions": {}, "costs": null}
+  },
+  "contracts": {},
+  "contexts": {}
+}

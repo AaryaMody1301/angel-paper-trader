@@ -1,4 +1,4 @@
-"""Single-instrument, read-only SmartAPI WebSocket 2.0 SnapQuote streaming."""
+"""Read-only SmartAPI WebSocket 2.0 SnapQuote streaming for validated instruments."""
 
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -11,6 +11,8 @@ import ssl
 import struct
 import sys
 import time
+
+from ai_paper.market import Contract
 
 from paper_trader import integer, readable, utc
 from smartapi_data import (AUTH_CODES, MASTER, Instrument, RateLimited, SessionExpired, SmartAPIError,
@@ -35,15 +37,19 @@ class _Interrupted(SmartAPIError):
     """A transport interruption that permits a bounded reconnect."""
 
 
+class _QuoteUnavailable(SmartAPIError):
+    """Valid identity with no currently executable, fresh book."""
+
+
 def parse_snap_quote(packet, instrument, now, max_age=30):
-    """Read the documented 379-byte little-endian contract; prices are already paise."""
+    """Read 379-byte SnapQuote: equity paise or a verified Contract's native units."""
     integer(max_age, "maximum quote age", 1, 3600)
-    if not isinstance(instrument, Instrument) or not isinstance(packet, bytes) or len(packet) != 379:
+    if not isinstance(instrument, (Instrument, Contract)) or not isinstance(packet, bytes) or len(packet) != 379:
         raise SmartAPIError("Invalid SnapQuote packet: require a validated NSE EQ instrument and exactly 379 binary bytes.")
     try:
         mode, exchange = struct.unpack_from("<BB", packet)
         token, terminator, padding = packet[2:27].partition(b"\0")
-        if mode != 3 or exchange != 1 or not terminator or any(padding) or token.decode("ascii") != instrument.token:
+        if mode != 3 or exchange != getattr(instrument, "exchange_type", 1) or not terminator or any(padding) or token.decode("ascii") != instrument.token:
             raise ValueError
         sequence, milliseconds, ltp = struct.unpack_from("<qqq", packet, 27)
         integer(sequence, "sequence number", maximum=2**63 - 1)
@@ -51,36 +57,48 @@ def parse_snap_quote(packet, instrument, now, max_age=30):
         integer(ltp, "last traded price in paise", 1)
         at, now = EPOCH + timedelta(milliseconds=milliseconds), utc(now)
         if not 0 <= (now - at).total_seconds() <= max_age:
-            raise SmartAPIError("WebSocket quote is stale or future-dated; no usable quote.")
+            raise _QuoteUnavailable("WebSocket quote is stale or future-dated; no usable quote.")
         sides, flags = {1: [], 0: []}, {1: 0, 0: 0}
-        for offset in range(147, 347, 20):
+        analytical=isinstance(instrument,Contract) and instrument.kind=="INDEX"
+        for offset in (() if analytical else range(147, 347, 20)):
             flag, quantity, price, orders = struct.unpack_from("<hqqh", packet, offset)
             if flag not in sides:
                 raise ValueError
             flags[flag] += 1
             integer(quantity, "depth quantity")
+            if isinstance(instrument, Contract):
+                quantity = integer(quantity*instrument.depth_factor, "normalised depth quantity")
             integer(price, "depth price in paise")
             integer(orders, "depth orders")
             if quantity:
-                if price == 0 or price % instrument.tick_paise:
+                if price == 0 or price % (instrument.tick if isinstance(instrument,Contract) else instrument.tick_paise):
                     raise ValueError
-                sides[flag].append(price)
+                sides[flag].append((price, quantity))
             elif price or orders:
                 raise ValueError
         # Protocol flags: 1 is buy/bid, 0 is sell/ask. SDK helper labels are reversed.
-        if flags != {1: 5, 0: 5} or not sides[1] or not sides[0]:
+        if not analytical and flags != {1: 5, 0: 5}:
             raise ValueError
-        bid, ask = max(sides[1]), min(sides[0])
+        if not analytical and (not sides[1] or not sides[0]):
+            raise _QuoteUnavailable("Executable bid/ask depth is unavailable.")
+        bid, ask = (0,0) if analytical else (max(p for p, _ in sides[1]), min(p for p, _ in sides[0]))
         if bid > ask:
             raise ValueError
     except SmartAPIError:
         raise
     except (ValueError, UnicodeError, OverflowError, struct.error):
         raise SmartAPIError("Malformed SnapQuote identity, timestamp, sequence, prices or bid/ask depth; no usable quote.") from None
+    extra = {"bid_qty": sum(q for p, q in sides[1] if p == bid),
+             "ask_qty": sum(q for p, q in sides[0] if p == ask)}
+    if isinstance(instrument, Contract):
+        volume = 0.0 if analytical else struct.unpack_from("<d", packet, 67)[0]
+        if not math.isfinite(volume) or volume < 0 or not volume.is_integer():
+            raise SmartAPIError("Invalid cumulative traded volume.")
+        extra["volume_total"] = integer(int(volume)*instrument.volume_factor, "cumulative traded volume")
+    prices = {"bid_units":bid,"ask_units":ask,"ltp_units":ltp,"price_scale":instrument.scale} if isinstance(instrument,Contract) else {"bid_paise":bid,"ask_paise":ask,"ltp_paise":ltp}
     return {"source": "ANGEL_SMARTAPI_WS_SNAP_QUOTE", "exchange": instrument.exchange,
             "symbol": instrument.symbol, "token": instrument.token, "sequence": sequence,
-            "bid_paise": bid, "ask_paise": ask, "ltp_paise": ltp,
-            "timestamp": at.isoformat(), "received_at": now.isoformat()}
+            "timestamp": at.isoformat(), "received_at": now.isoformat(), **prices, **extra}
 
 
 def check_transport():
@@ -161,18 +179,30 @@ def _active_session(client, expected):
         raise SessionExpired("Session changed; restart streaming after local authentication.")
 
 
-def stream_quotes(client, instrument, *, max_age=30, max_reconnects=2, max_quotes=10, duration=60):
+def stream_quotes(client, instrument, *, max_age=30, max_reconnects=2, max_quotes=10, duration=60, windows=None):
     """Yield JSON-ready health/quote events. Close the iterator if stopping early."""
-    if not isinstance(instrument, Instrument):
+    instruments = list(instrument) if isinstance(instrument, (list, tuple)) else [instrument]
+    if not 1 <= len(instruments) <= 21 or any(not isinstance(c, (Instrument, Contract)) for c in instruments):
         raise SmartAPIError("Streaming requires an instrument validated against the current master.")
+    by_wire = {(getattr(c, "exchange_type", 1), c.token): c for c in instruments}
+    if len(by_wire) != len(instruments):
+        raise SmartAPIError("Duplicate streaming instrument identity.")
+    if windows is not None:
+        if set(windows)!=set(by_wire) or any(len(w)!=2 or utc(w[0])>=utc(w[1]) for w in windows.values()):
+            raise SmartAPIError("Verified exchange session windows are required for every selected instrument.")
     _validate_options(max_age, max_reconnects, max_quotes, duration)
     client._require_session(streaming=True)
     session = client._jwt
     deadline = time.monotonic() + duration
-    previous_at, received, retries = None, 0, 0
+    previous_times, received, retries = {}, 0, 0
+    groups = {}
+    for (exchange, token) in by_wire:
+        groups.setdefault(exchange, []).append(token)
     subscription = json.dumps({"correlationID": "paperdata1", "action": 1,
-                               "params": {"mode": 3, "tokenList": [{"exchangeType": 1, "tokens": [instrument.token]}]}})
+                               "params": {"mode": 3, "tokenList": [{"exchangeType": e, "tokens": tokens} for e, tokens in groups.items()]}})
     while received < max_quotes and time.monotonic() < deadline:
+        if windows is not None and all(utc(client.clock())>=closed for _,closed in windows.values()):
+            break
         connection, reason = None, None
         try:
             _active_session(client, session)
@@ -185,8 +215,9 @@ def stream_quotes(client, instrument, *, max_age=30, max_reconnects=2, max_quote
             connection.send("ping")
             ping_at = connected_at = time.monotonic()
             next_ping, pending_ping = ping_at + PING_INTERVAL, ping_at
-            sequence, fingerprint, current_at = None, None, None
-            barrier = previous_at
+            sequences, fingerprints, current_times = {}, {}, {}
+            unavailable = set()
+            barriers = dict(previous_times)
             yield _status(client, "SUBSCRIBED")
             while received < max_quotes and time.monotonic() < deadline:
                 _active_session(client, session)
@@ -196,11 +227,22 @@ def stream_quotes(client, instrument, *, max_age=30, max_reconnects=2, max_quote
                 if instant >= next_ping and pending_ping is None:
                     connection.send("ping")
                     pending_ping, next_ping = instant, instant + PING_INTERVAL
-                if current_at is None:
-                    if instant - connected_at >= max_age:
+                if windows is None:
+                    if len(current_times) != len(instruments) and instant-connected_at>=max_age:
                         raise _Interrupted("NO_FRESH_QUOTE")
-                elif not 0 <= (utc(client.clock()) - current_at).total_seconds() <= max_age:
-                    raise _Interrupted("STALE_QUOTE")
+                    if any(not 0 <= (utc(client.clock()) - at).total_seconds() <= max_age for at in current_times.values()):
+                        raise _Interrupted("STALE_QUOTE")
+                else:
+                    wall=utc(client.clock())
+                    if all(wall>=closed for _,closed in windows.values()):
+                        break
+                    for key,(opened,closed) in windows.items():
+                        at=current_times.get(key)
+                        missing=opened<=wall<closed and ((at is None and (wall-opened).total_seconds()>max_age) or (at is not None and (wall-at).total_seconds()>max_age))
+                        if (missing or wall>=closed) and key not in unavailable:
+                            unavailable.add(key)
+                            c=by_wire[key]
+                            yield _status(client,"UNAVAILABLE",exchange=c.exchange,token=c.token,reason="NO_EXECUTABLE_BOOK")
                 try:
                     message = connection.recv(timeout=min(1, max(0.01, deadline - instant)))
                 except TimeoutError:
@@ -215,20 +257,41 @@ def stream_quotes(client, instrument, *, max_age=30, max_reconnects=2, max_quote
                         pending_ping = None
                         continue
                     _control_message(message, client)
-                quote = parse_snap_quote(message, instrument, client.clock(), max_age)
-                signature = (quote["timestamp"], quote["bid_paise"], quote["ask_paise"], quote["ltp_paise"])
+                if not isinstance(message, bytes) or len(message) != 379:
+                    raise SmartAPIError("Malformed SnapQuote frame.")
+                wire = (message[1], message[2:27].partition(b"\0")[0].decode("ascii", errors="replace"))
+                if wire not in by_wire:
+                    raise SmartAPIError("Unexpected instrument in streaming response.")
+                if windows is not None and not windows[wire][0]<=utc(client.clock())<windows[wire][1]:
+                    continue
+                try:
+                    quote = parse_snap_quote(message, by_wire[wire], client.clock(), max_age)
+                except _QuoteUnavailable:
+                    if windows is None:
+                        raise
+                    if wire not in unavailable:
+                        unavailable.add(wire)
+                        c=by_wire[wire]
+                        yield _status(client,"UNAVAILABLE",exchange=c.exchange,token=c.token,reason="NO_EXECUTABLE_BOOK")
+                    continue
+                previous_at = previous_times.get(wire)
+                sequence, fingerprint = sequences.get(wire), fingerprints.get(wire)
+                barrier = barriers.get(wire)
+                suffix="_units" if isinstance(by_wire[wire],Contract) else "_paise"
+                signature = (quote["timestamp"], quote["bid"+suffix], quote["ask"+suffix], quote["ltp"+suffix], quote["bid_qty"], quote["ask_qty"], quote.get("volume_total"))
                 if sequence is not None:
                     if quote["sequence"] < sequence or (quote["sequence"] == sequence and signature != fingerprint):
                         raise SmartAPIError("Out-of-order or conflicting WebSocket sequence; no usable quote.")
                     if quote["sequence"] == sequence:
                         continue
-                sequence, fingerprint = quote["sequence"], signature
+                sequences[wire], fingerprints[wire] = quote["sequence"], signature
                 at = datetime.fromisoformat(quote["timestamp"])
                 if barrier is not None and at <= barrier:
                     continue  # Reconnect replay isn't fresh evidence; await a newer exchange timestamp.
                 if previous_at is not None and at < previous_at:
                     raise SmartAPIError("Out-of-order WebSocket exchange timestamp; no usable quote.")
-                current_at = previous_at = at
+                current_times[wire] = previous_times[wire] = at
+                unavailable.discard(wire)
                 received += 1
                 yield {"event": "quote", "status": "LIVE", **quote}
         except InvalidStatus as exc:

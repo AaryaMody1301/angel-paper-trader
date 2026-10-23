@@ -1,0 +1,5 @@
+# Optional GGUF conversion support; use with the pinned training environment.
+gguf==0.19.0
+sentencepiece==0.2.2
+protobuf==7.36.2
+requests==2.34.2

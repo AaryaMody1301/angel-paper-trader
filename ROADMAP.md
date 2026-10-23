@@ -50,14 +50,22 @@ Acceptance: authorised live quotes are independently checked; failures have clea
 
 ## Phase 3 — realistic forward paper trading
 
-- Add authoritative contract lots/ticks, supported expiry policy, explicit quantity/liquidity assumptions and partial-fill handling.
-- Replace the illustrative flat charge with a dated, configurable cost model for supported segments.
-- Add exposure/position limits, daily entry stops and a feed-disconnect policy.
-- Add recorded-data replay without future-data leakage and exportable, private session results.
+Implementation added on 23 October 2026: `ai_trader.py` provides collection, immutable datasets, CPU/CUDA LoRA training, local Ollama evaluation, recorded-book replay, gated shadow/paper sessions and private reports. The separate AI journal preserves original offline journals. Native-unit contract prices, lots/multipliers, full-notional futures collateral, bounded displayed-liquidity fills, costs, exposure/daily limits and recovery controls are implemented. See [AI_WORKFLOW.md](AI_WORKFLOW.md).
 
-Acceptance: manual calculations reconcile with fills and reports; replay is reproducible; unavailable liquidity/data never produces an invented fill. Supported and unsupported order/contract types are documented.
+All SmartAPI segments have capability/readiness records; activation requires verified metadata/account access, sufficient historical and recorded data, passing holdout results and two complete subsequent shadow sessions. No real market dataset, trained trading model, authenticated segment acceptance or profitable strategy has been established. Partial fills remain outside this increment; orders require the whole requested quantity in displayed top-of-book depth.
+
+Remaining acceptance:
+
+- Verify dated contract units, calendars, costs and authenticated feeds locally; reconcile fills and reports with independent calculations.
+- Collect at least 60 training, 20 validation and 20 untouched test sessions per enabled segment, including recorded executable depth for return evaluation.
+- Pass the locked holdout and recorded-book performance gates, then complete two subsequent shadow sessions without control failures.
+- Activate segments progressively: cash equities, financial derivatives, commodities and currencies. Unsupported or insufficiently evidenced contracts stay blocked.
+
+Replay must remain reproducible; unavailable liquidity/data must never produce an invented fill. Partial fills and overnight settlement remain unsupported.
 
 ## Phase 4 — dashboard and strategy evaluation
+
+The local fine-tuned predictor/evaluation pipeline is implemented; market performance acceptance remains open. Dashboard work is deferred until the terminal flow is accepted.
 
 - Add a local dashboard for quote age, connection health, selected instrument, virtual orders, holdings and net P&L.
 - Add one explicitly specified strategy at a time and compare with a simple baseline.

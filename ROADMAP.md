@@ -11,15 +11,40 @@ Implemented:
 - Quote freshness, cash/holding checks and idempotent requests across restarts/concurrent writers.
 - An isolated fictional demo, CLI instructions and accounting/error-path tests.
 
-Acceptance: `python -m unittest -v` passes; `python paper_trader.py demo` finishes with ₹78 realised profit; a rejected trade cannot change the ledger. No broker SDK or network path is present.
+Acceptance verified again on 17 October 2026: the original 12 accounting tests pass; `python paper_trader.py demo` finishes with ₹78 realised profit; rejected trades cannot change the ledger. `paper_trader.py` and its demo remain offline, with no broker SDK or network path.
 
-## Phase 2 — authorised Angel One market data
+## Phase 2 — authorised Angel One market data (REST/WebSocket implemented; live acceptance open)
 
-- Re-check current official SmartAPI access conditions, including registered static egress and daily authentication; verify them against the actual account without putting secrets in chat or Git.
-- Add a narrowly scoped authentication/data adapter and a placeholder-only `.env.example` when used.
-- Verify instrument identity, price scaling, timestamps, REST quotes and WebSocket access separately.
-- Validate SDK depth labels against the current protocol and REST FULL quotes; retain TLS certificate verification and redact credentials in errors.
-- Test disconnection, expiry, rate responses and reconnect behaviour. Reject stale prices throughout.
+Implemented and checked on 17 October 2026 (offline unless stated):
+
+- Standard-library `smartapi_data.py`: local PIN/TOTP authentication, memory-only JWT, conservative midnight IST expiry, REST FULL bid/ask snapshots and historical OHLCV. No automatic refresh, retries or invented/cached-price fallback.
+- Exact outbound allowlist for login, quote, candles and public instrument master only; verified TLS, blocked redirects, safe errors and no execution SDK. All order/GTT/account-mutation endpoints are inaccessible through the adapter.
+- Placeholder-only `.env.example`, a literal local loader, hidden PIN/TOTP prompts, no session/account files and existing `.gitignore` protections preserved.
+- NSE EQ cash scope: fresh master lookup binds exchange/symbol/token and supported lot/tick metadata; exact INR-to-paise conversion, exchange timestamps, quote age/depth and historical candle checks. Historical prices do not assume today's tick applied to older trades.
+- Public metadata check: an actual verified-TLS master download resolved `NSE / SBIN-EQ / 3045` with a 5-paise tick. This exercised no login or authenticated endpoint and did not save the master or any account data.
+- Offline tests cover parsing, identity/scaling, credentials/TLS, endpoint denial before I/O, midnight/broker expiry, rate cooldown, disconnect/failure without a stale-price fallback, request recovery and CLI isolation from accounting.
+- Dated official-source review and local commands in [README.md](README.md). Newer broker moderator guidance requires static IP for all app types, superseding the temporary 2025 data exemption. Conservative pacing uses the stricter conflicting documentation. REST buy/sell mapping was checked against the WebSocket flag contract and the official SDK's internal label swaps.
+
+WebSocket increment implemented and checked offline on 18 October 2026:
+
+- `smartapi_stream.py` and `SmartAPIData.stream()`: single-instrument NSE EQ SnapQuote subscription, binary identity/depth/sequence validation and exact paise/millisecond decoding. Fictional protocol fixtures independently match the REST FULL sides and scaling.
+- Opt-in memory-only feed token, shared local hidden login prompts and daily session expiry checked throughout streaming, including after a blocking receive. Closing/cancelling disposes sockets and tokens without broker logout.
+- Text heartbeat and data-age watchdogs, explicit health events, bounded lifetime reconnect/backoff and resubscription. No cached/fictional prices or silent REST fallback. After reconnect, old/equal feed timestamps are withheld until a newer quote arrives.
+- Fixed market-data WSS target, verified TLS, rejected redirects/proxies, bounded frames/messages, suppressed dependency credential logging and no generic send/URL API. Existing HTTP execution restrictions remain unchanged.
+- One optional pinned transport (`requirements-stream.txt`); REST/accounting/core fixtures still run without it. All 69 tests pass with it installed; the dependency-free run passes with two installed-transport checks skipped. The isolated demo still returns ₹78 profit.
+
+Not included in Phase 2:
+
+- Automatic delivery of broker data into paper fills. The REST inspection CLI never opens the paper journal; forward-execution modelling belongs to Phase 3.
+- Multiple instruments/modes, derivatives or other exchanges. The stream keeps the same supported NSE EQ identity scope as REST.
+
+Account-dependent checks **not performed / not verified**:
+
+- App creation/access, accepted authentication flow, actual registered static IPv4 route, account permission for REST quotes and history, and daily session behaviour against the broker.
+- Live instrument/price/feed-time and bid/ask comparison with Angel One's terminal, plus small-range historical OHLCV reconciliation. The offline fixture tests are not evidence of live access or authoritative live-price accuracy.
+- Actual broker denial/rate-limit/disconnect and recovery behaviour under authorised low-volume use. WebSocket authentication/access, heartbeat behaviour and independent live REST-versus-WebSocket depth comparison remain unverified; the implementation and offline recovery checks are complete for the stated scope.
+
+Remaining setup: create/verify your app and TOTP locally, obtain/register static IPv4 egress, confirm data/feed permissions, populate ignored `.env`, install the optional stream dependency and run the documented quote/history/stream commands from that route. Keep all credentials, raw responses and account data local. Neither implementation increment attempted authenticated broker requests.
 
 Acceptance: authorised live quotes are independently checked; failures have clear status; an outbound-endpoint audit shows that the paper application cannot submit or change real orders. Broker access must be demonstrated separately from offline tests.
 
